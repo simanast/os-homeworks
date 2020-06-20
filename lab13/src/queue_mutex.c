@@ -21,6 +21,7 @@ typedef struct {
   int length;
   int next_in;
   int next_out;
+  Mutex *mutex;
 } Queue;
 
 Queue *make_queue(int length)
@@ -30,42 +31,54 @@ Queue *make_queue(int length)
   queue->array = (int *) malloc(length * sizeof(int));
   queue->next_in = 0;
   queue->next_out = 0;
+  queue->mutex = make_mutex();
   return queue;
 }
 
 int queue_incr(Queue *queue, int i)
 {
+  // NOTE: you must hold the mutex to call this function.
   return (i+1) % queue->length;
 }
 
 int queue_empty(Queue *queue)
 {
+  // NOTE: you must hold the mutex to call this function.
   // queue is empty if next_in and next_out are the same
-  return (queue->next_in == queue->next_out);
+  int res = (queue->next_in == queue->next_out);
+  return res;
 }
 
 int queue_full(Queue *queue)
 {
+  // NOTE: you must hold the mutex to call this function.
   // queue is full if incrementing next_in lands on next_out
-  return (queue_incr(queue, queue->next_in) == queue->next_out);
+  int res = (queue_incr(queue, queue->next_in) == queue->next_out);
+  return res;
 }
 
 void queue_push(Queue *queue, int item) {
+  mutex_lock(queue->mutex);
   if (queue_full(queue)) {
+    mutex_unlock(queue->mutex);
     perror_exit("queue is full");
   }
   
   queue->array[queue->next_in] = item;
   queue->next_in = queue_incr(queue, queue->next_in);
+  mutex_unlock(queue->mutex);
 }
 
 int queue_pop(Queue *queue) {
+  mutex_lock(queue->mutex);
   if (queue_empty(queue)) {
+    mutex_unlock(queue->mutex);
     perror_exit("queue is empty");
   }
   
   int item = queue->array[queue->next_out];
   queue->next_out = queue_incr(queue, queue->next_out);
+  mutex_unlock(queue->mutex);
   return item;
 }
 
@@ -110,7 +123,7 @@ void *producer_entry(void *arg)
 {
   int i;
   Shared *shared = (Shared *) arg;
-  for (i=0; i<QUEUE_LENGTH-1; i++) {
+  for (i=0; i<QUEUE_LENGTH; i++) {
     printf("adding item %d\n", i);
     queue_push(shared->queue, i);
   }
@@ -123,7 +136,7 @@ void *consumer_entry(void *arg)
   int item;
   Shared *shared = (Shared *) arg;
 
-  for (i=0; i<QUEUE_LENGTH-1; i++) {
+  for (i=0; i<QUEUE_LENGTH; i++) {
     item = queue_pop(shared->queue);
     printf("consuming item %d\n", item);
   }

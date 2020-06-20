@@ -12,7 +12,7 @@ License: Creative Commons Attribution-ShareAlike 3.0
 #include "utils.h"
 
 #define NUM_CHILDREN 2
-#define QUEUE_LENGTH 16
+#define NUM_ITEMS 127
 
 // QUEUE
 
@@ -21,6 +21,9 @@ typedef struct {
   int length;
   int next_in;
   int next_out;
+  Mutex *mutex;
+  Cond *nonempty;
+  Cond *nonfull;
 } Queue;
 
 Queue *make_queue(int length)
@@ -30,6 +33,9 @@ Queue *make_queue(int length)
   queue->array = (int *) malloc(length * sizeof(int));
   queue->next_in = 0;
   queue->next_out = 0;
+  queue->mutex = make_mutex();
+  queue->nonempty = make_cond();
+  queue->nonfull = make_cond();
   return queue;
 }
 
@@ -41,31 +47,39 @@ int queue_incr(Queue *queue, int i)
 int queue_empty(Queue *queue)
 {
   // queue is empty if next_in and next_out are the same
-  return (queue->next_in == queue->next_out);
+  int res = (queue->next_in == queue->next_out);
+  return res;
 }
 
 int queue_full(Queue *queue)
 {
   // queue is full if incrementing next_in lands on next_out
-  return (queue_incr(queue, queue->next_in) == queue->next_out);
+  int res = (queue_incr(queue, queue->next_in) == queue->next_out);
+  return res;
 }
 
 void queue_push(Queue *queue, int item) {
-  if (queue_full(queue)) {
-    perror_exit("queue is full");
+  mutex_lock(queue->mutex);
+  while (queue_full(queue)) {
+    cond_wait(queue->nonfull, queue->mutex);    
   }
   
   queue->array[queue->next_in] = item;
   queue->next_in = queue_incr(queue, queue->next_in);
+  mutex_unlock(queue->mutex);
+  cond_signal(queue->nonempty);
 }
 
 int queue_pop(Queue *queue) {
-  if (queue_empty(queue)) {
-    perror_exit("queue is empty");
+  mutex_lock(queue->mutex);
+  while (queue_empty(queue)) {
+    cond_wait(queue->nonempty, queue->mutex);
   }
   
   int item = queue->array[queue->next_out];
   queue->next_out = queue_incr(queue, queue->next_out);
+  mutex_unlock(queue->mutex);
+  cond_signal(queue->nonfull);
   return item;
 }
 
@@ -78,7 +92,7 @@ typedef struct {
 Shared *make_shared()
 {
   Shared *shared = check_malloc(sizeof(Shared));
-  shared->queue = make_queue(QUEUE_LENGTH);
+  shared->queue = make_queue(128);
   return shared;
 }
 
@@ -110,7 +124,7 @@ void *producer_entry(void *arg)
 {
   int i;
   Shared *shared = (Shared *) arg;
-  for (i=0; i<QUEUE_LENGTH-1; i++) {
+  for (i=0; i<NUM_ITEMS; i++) {
     printf("adding item %d\n", i);
     queue_push(shared->queue, i);
   }
@@ -123,7 +137,7 @@ void *consumer_entry(void *arg)
   int item;
   Shared *shared = (Shared *) arg;
 
-  for (i=0; i<QUEUE_LENGTH-1; i++) {
+  for (i=0; i<NUM_ITEMS; i++) {
     item = queue_pop(shared->queue);
     printf("consuming item %d\n", item);
   }
